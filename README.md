@@ -29,12 +29,14 @@ That single command will:
 3. Build `rpow-gpu-miner.exe` (and the CPU fallback).
 4. Enumerate every OpenCL GPU on your system and ask whether you want
    to use the most powerful one, all of them, or a specific subset.
-5. Authenticate you. Pick one of:
-   - **Magic link**: enter your email, the CLI requests a link, you paste
-     it back. Works for most accounts.
-   - **Browser session cookie**: paste the `rpow_session` cookie from a
-     tab where you're already signed in. Useful if magic-link emails
-     never reach your inbox. See [Authentication](#authentication) below.
+5. Ask how you want to authenticate, with a single `[m]/[c]` prompt:
+   - **`[m]` magic link** — enter your email, the CLI requests a link,
+     you paste it back.
+   - **`[c]` browser cookie** — paste the `rpow_session` cookie from a
+     tab where you're already signed in to `rpow2.com`. Use this if
+     magic-link emails never reach your inbox or the request gets
+     gated by browser-only human verification.
+   See [Authentication](#authentication) for the cookie copy-paste steps.
 6. Ask how long you want to mine — forever, a token count, or a
    wall-clock duration like `7d`.
 7. Start mining.
@@ -105,23 +107,26 @@ that doesn't matter.
 ## Authentication
 
 The miner authenticates the same way your browser does — by carrying the
-`rpow_session` cookie. There are two ways to obtain it:
+`rpow_session` cookie. You can obtain that cookie one of two ways. They
+are peers; pick whichever you prefer. The Windows installer asks once at
+the top of the run (`[m]` magic link / `[c]` browser cookie) and runs
+the chosen path end to end.
 
-### Option A — magic link (default)
+### Option 1 — magic link
 
 ```bash
 node rpow-cli.js login --email you@example.com
 node rpow-cli.js complete-login --link "https://rpow2.com/auth/verify?..."
 ```
 
-If `POST /auth/request` is rate-limited or gated by browser-only human
-verification, the request can fail. In that case use Option B.
+`POST /auth/request` may be rate-limited or gated by browser-only human
+verification (Turnstile). If you can't get a link to your inbox, use
+Option 2 instead — there is no need to retry magic links forever.
 
-### Option B — paste your browser session cookie
+### Option 2 — paste your browser session cookie
 
-If you can sign in to `rpow2.com` in your normal browser but the CLI
-can't request or receive a magic link, you can hand the CLI the same
-session cookie your browser is already using:
+If you're already signed in to `rpow2.com` in a browser, hand the CLI
+the same cookie that browser is using:
 
 1. Sign in to `https://rpow2.com` in your browser.
 2. Open DevTools (F12 in most browsers) and switch to the **Network** tab.
@@ -190,6 +195,7 @@ node rpow-cli.js logout
 | `--gpu-batch`       | Nonces per kernel launch (default 1 048 576). Tune up on big GPUs.   |
 | `--gpu-local-size`  | OpenCL local work-group size (default 256).                          |
 | `--state PATH`      | Override state file path.                                            |
+| `--cookie VALUE`    | (`paste-cookie` only) `rpow_session=...` from a signed-in browser. Or set `RPOW_COOKIE` and any subcommand will pick it up. |
 | `--proxy SPEC`      | HTTP/HTTPS proxy, e.g. `http://user:pass@host:8080`.                 |
 | `--timeout MS`      | Per-request timeout (default 20 000).                                |
 | `--retries N`       | Max retries on transient network errors (default 5).                 |
