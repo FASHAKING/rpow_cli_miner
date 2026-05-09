@@ -1143,7 +1143,8 @@ function mineSolutionGpu(challenge, state, stateFile, logEveryMs, workerCount, a
       function onFound(spec, message) {
         if (settled) return;
         settled = true;
-        const total = [...lastHashes.values()].reduce((a, b) => a + b, 0n) + BigInt(message.hashes || "0");
+        lastHashes.set(spec, BigInt(message.hashes || "0"));
+        const total = [...lastHashes.values()].reduce((a, b) => a + b, 0n);
         const seconds = Math.max(0.001, (Date.now() - started) / 1000);
         const rate = Number(total) / seconds;
         state.mining = {
