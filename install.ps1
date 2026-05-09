@@ -236,25 +236,7 @@ function Do-CookieLogin($stateFile, $cookieValue) {
   Write-Ok "logged in via browser cookie"
 }
 
-function Do-Login($stateFile) {
-  if ($Cookie) {
-    Write-Step "Authenticating with provided rpow_session cookie"
-    Do-CookieLogin $stateFile $Cookie
-    return
-  }
-
-  Write-Host ""
-  Write-Host "How would you like to sign in?"
-  Write-Host "  [m] magic link    - email a sign-in link to your address (default)"
-  Write-Host "  [c] browser cookie - paste rpow_session from a tab where you're already signed in"
-  $authChoice = (Read-Host "Choice [m]").Trim().ToLower()
-  if (-not $authChoice) { $authChoice = "m" }
-
-  if ($authChoice -eq "c" -or $authChoice -eq "cookie") {
-    Do-CookieLogin $stateFile $null
-    return
-  }
-
+function Do-MagicLinkLogin($stateFile) {
   if (-not $Email) {
     $Email = Read-Host "Enter your rpow2.com account email"
   }
@@ -264,48 +246,45 @@ function Do-Login($stateFile) {
   try {
     Write-Step "Requesting magic link for $Email"
     & node "rpow-cli.js" login --email $Email --state $stateFile
-    $loginExit = $LASTEXITCODE
-
-    if ($loginExit -ne 0) {
+    if ($LASTEXITCODE -ne 0) {
       Write-Host ""
       Write-Warn2 "The CLI could not request a magic link directly."
       Write-Warn2 "The server most likely requires browser-based human verification (Turnstile)."
       Write-Host ""
-      Write-Host "You have two ways forward:" -ForegroundColor Yellow
-      Write-Host "  [1] Request the magic link from your browser, then paste it here." -ForegroundColor Yellow
-      Write-Host "  [2] Skip magic links entirely and reuse the rpow_session cookie" -ForegroundColor Yellow
-      Write-Host "      from your already-signed-in browser." -ForegroundColor Yellow
-      Write-Host ""
-      $fallback = (Read-Host "Choose [1] magic-link / [2] cookie [1]").Trim()
-      if ($fallback -eq "2") {
-        Do-CookieLogin $stateFile $null
-        return
-      }
-      Write-Host ""
-      Write-Host "Magic-link fallback:" -ForegroundColor Yellow
-      Write-Host "  1. Open https://rpow2.com in your browser." -ForegroundColor Yellow
-      Write-Host "  2. Sign in with $Email and complete the human verification." -ForegroundColor Yellow
-      Write-Host "  3. Open the magic-link email from rpow2.com." -ForegroundColor Yellow
-      Write-Host "  4. Copy the link WITHOUT clicking it (clicking may consume the token in the browser)." -ForegroundColor Yellow
-      Write-Host "  5. Paste it below." -ForegroundColor Yellow
-      Write-Host ""
+      Write-Host "Open https://rpow2.com in your browser, sign in with $Email," -ForegroundColor Yellow
+      Write-Host "then open the magic-link email and copy the link without clicking it." -ForegroundColor Yellow
+      Write-Host "Paste it below. (Or re-run this installer and pick the browser-cookie option instead.)" -ForegroundColor Yellow
     } else {
       Write-Host ""
-      Write-Host "Check your inbox for an email from rpow2.com." -ForegroundColor Yellow
-      Write-Host "Copy the magic link from the email and paste it below." -ForegroundColor Yellow
-      Write-Host "(If you never receive a link, press Enter to switch to the browser-cookie option.)" -ForegroundColor Yellow
+      Write-Host "Check your inbox for an email from rpow2.com and paste the magic link below." -ForegroundColor Yellow
     }
 
-    $link = Read-Host "Paste magic link (or leave blank to use browser cookie instead)"
-    if (-not $link) {
-      Do-CookieLogin $stateFile $null
-      return
-    }
-
+    $link = Read-Host "Paste magic link"
+    if (-not $link) { throw "No magic link provided." }
     & node "rpow-cli.js" complete-login --link $link --state $stateFile
     if ($LASTEXITCODE -ne 0) { throw "complete-login failed" }
   } finally { Pop-Location }
   Write-Ok "logged in"
+}
+
+function Do-Login($stateFile) {
+  if ($Cookie) {
+    Write-Step "Authenticating with provided rpow_session cookie"
+    Do-CookieLogin $stateFile $Cookie
+    return
+  }
+
+  Write-Host ""
+  Write-Host "How would you like to sign in?"
+  Write-Host "  [m] magic link     - email a sign-in link to your address"
+  Write-Host "  [c] browser cookie - paste rpow_session from a tab where you're already signed in"
+  $authChoice = (Read-Host "Choice [m]").Trim().ToLower()
+  if (-not $authChoice) { $authChoice = "m" }
+
+  switch ($authChoice) {
+    { $_ -in "c","cookie","browser" } { Do-CookieLogin $stateFile $null }
+    default                            { Do-MagicLinkLogin $stateFile }
+  }
 }
 
 function Get-GpuDevices {
