@@ -1,104 +1,297 @@
 # rpow_cli_miner
 
-Native C/OpenCL RPOW miner with CPU and GPU backends, up to 700x faster than the website and 35x faster than CPU mining.
+A CLI miner for the RPOW (reusable proof-of-work) token system at
+`rpow2.com`. Solves the site's SHA-256 proof-of-work challenges from
+the command line, with three interchangeable engines:
 
-## Features
+- **Node** worker threads — pure JavaScript, slowest, no build step.
+- **Native** C miner — multi-threaded CPU SHA-256, ~35× faster than Node.
+- **GPU** OpenCL miner — runs on any NVIDIA / AMD / Intel GPU with an
+  OpenCL ICD, ~700× faster than the in-browser miner.
 
-- Browserless CLI flow for RPOW backend/API
-- Native CPU miner in C
-- Native GPU miner in C with OpenCL
-- Node fallback miner
-- Session persistence with local state files
-- Retry handling for transient API/network failures
-- Portable Windows bundle with no `npm install`
+Auto-detects every GPU on the machine and can mine on **multiple GPUs
+simultaneously** (e.g. NVIDIA discrete + Intel integrated together).
 
-## Included engines
+---
 
-- `--engine node`
-- `--engine native`
-- `--engine gpu`
+## Quick start (Windows, one-liner)
 
-## Quick start
+Open PowerShell and paste:
 
 ```powershell
-node rpow-cli.js login --email you@example.com --state .rpow-a.json
-node rpow-cli.js complete-login --link "https://..." --state .rpow-a.json
-node rpow-cli.js mine --count 1000 --engine gpu --state .rpow-a.json
+irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 ```
 
-## Windows GPU setup
+That single command will:
 
-1. Install Node.js 18+ and confirm it works:
+1. Install Git, Node.js LTS, and MinGW gcc via `winget` if missing.
+2. Clone this repo into `%USERPROFILE%\rpow-cli`.
+3. Build `rpow-gpu-miner.exe` (and the CPU fallback).
+4. Enumerate every OpenCL GPU on your system and ask whether you want
+   to use the most powerful one, all of them, or a specific subset.
+5. Prompt for your account email, send a magic link, and prompt for the
+   pasted-back link.
+6. Ask how long you want to mine — forever, a token count, or a
+   wall-clock duration like `7d`.
+7. Start mining.
+
+Session state lives in `%USERPROFILE%\.rpow-cli\state.json`, so re-running
+the one-liner picks up where you left off.
+
+### Pre-supplied answers (no prompts)
 
 ```powershell
-node -v
+$env:RPOW_EMAIL    = "you@example.com"
+$env:RPOW_GPUS     = "all"      # auto | all | 0:0,1:0
+$env:RPOW_DURATION = "7d"       # or set RPOW_COUNT="forever" / "1000000"
+irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 ```
 
-2. Make sure your GPU driver is installed with OpenCL support.
-
-- NVIDIA: standard GeForce or Studio driver is usually enough.
-- AMD: install the normal Adrenalin driver.
-
-3. Build the GPU miner:
+### Re-running after install
 
 ```powershell
+cd $env:USERPROFILE\rpow-cli
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
+```
+
+---
+
+## How it works
+
+The site exposes a small REST flow that the CLI reproduces:
+
+1. `POST /auth/request { email }` — sends a magic-link email.
+2. You click / paste the magic link → server sets a session cookie.
+3. `POST /challenge` — returns `{ challenge_id, nonce_prefix, difficulty_bits, expires_at }`.
+4. The miner searches for a `nonce` (uint64) such that
+   `SHA-256(nonce_prefix || little_endian(nonce))` has at least
+   `difficulty_bits` trailing zero bits.
+5. `POST /mint { challenge_id, solution_nonce }` — server verifies the
+   hash and mints/credits a token to your account.
+6. Repeat from step 3 until your `--count` is reached (or forever).
+
+The CLI persists the session cookie and the in-progress challenge in
+`%USERPROFILE%\.rpow-cli\state.json` (Linux/macOS: `~/.rpow-cli/state.json`),
+so killing and restarting resumes mining without re-logging-in.
+
+### What "multi-GPU" actually does
+
+The C miner is single-device per process. When you ask for multiple
+GPUs, the CLI launches one miner subprocess per device and gives each
+one a disjoint nonce stripe (2⁴⁸ nonces apart, far more than any
+plausible challenge can exhaust). Whichever device finds a valid nonce
+first wins; the others are killed and the solution is submitted. The
+combined hash rate is logged.
+
+This means two devices of very different speeds work fine together —
+the slow one just contributes whatever it can during the time the fast
+one is searching. There is no work-stealing, but for short challenges
+that doesn't matter.
+
+---
+
+## Commands
+
+```text
+node rpow-cli.js map                      # show the API endpoint table
+node rpow-cli.js list-gpus                # enumerate OpenCL devices
+node rpow-cli.js login --email you@...    # request a magic-link email
+node rpow-cli.js complete-login --link "https://..."
+node rpow-cli.js me                       # check session + balance
+node rpow-cli.js mine --count 10          # mine 10 tokens then stop
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
+node rpow-cli.js send --to user@... --amount 1
+node rpow-cli.js ledger                   # transaction history
+node rpow-cli.js activity                 # account activity
+node rpow-cli.js logout
+```
+
+### Common flags
+
+| Flag                | Meaning                                                              |
+| ------------------- | -------------------------------------------------------------------- |
+| `--count N`         | Number of tokens to mint, or `forever`/`infinite`/`unlimited`. Defaults to `1`. Accepts any positive integer up to ~9 quadrillion. |
+| `--duration SPEC`   | Stop after this much wall-clock time. Examples: `30s`, `5m`, `2h`, `7d`. Combine with `--count forever` to mine until either limit. |
+| `--engine`          | `node`, `native` (CPU C), or `gpu` (OpenCL).                         |
+| `--workers N`       | CPU threads (for `native`/`node`).                                   |
+| `--gpu-devices`     | `auto`, `all`, or comma list `p:d,p:d` (e.g. `0:0,1:0`).             |
+| `--gpu-batch`       | Nonces per kernel launch (default 1 048 576). Tune up on big GPUs.   |
+| `--gpu-local-size`  | OpenCL local work-group size (default 256).                          |
+| `--state PATH`      | Override state file path.                                            |
+| `--proxy SPEC`      | HTTP/HTTPS proxy, e.g. `http://user:pass@host:8080`.                 |
+| `--timeout MS`      | Per-request timeout (default 20 000).                                |
+| `--retries N`       | Max retries on transient network errors (default 5).                 |
+| `--log-every-ms`    | Mining progress log interval.                                        |
+| `--verbose`         | Log every HTTP request.                                              |
+
+### How long do you want to run?
+
+```powershell
+# Mine forever (until you hit Ctrl+C):
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
+
+# Mine a specific number of tokens:
+node rpow-cli.js mine --count 1000000 --engine gpu --gpu-devices auto
+
+# Mine for one week of wall-clock time:
+node rpow-cli.js mine --duration 7d --engine gpu --gpu-devices auto
+
+# Mine for 6 hours overnight:
+node rpow-cli.js mine --duration 6h --engine gpu --gpu-devices all
+```
+
+The installer asks the same question interactively (forever / count / duration) right before mining starts. To skip the prompt, set `$env:RPOW_COUNT` (e.g. `forever` or `1000000`) **or** `$env:RPOW_DURATION` (e.g. `7d`).
+
+---
+
+## GPU selection
+
+Run:
+
+```powershell
+node rpow-cli.js list-gpus
+```
+
+You'll see something like:
+
+```text
+Detected GPU devices:
+  0:0  NVIDIA GeForce RTX 3060  vendor=NVIDIA Corporation  cu=28  mem=12288MB  [auto]
+  1:0  Intel(R) UHD Graphics 770  vendor=Intel(R) Corporation  cu=32  mem=6494MB
+
+Use one device :  --engine gpu --gpu-devices auto
+Use all devices:  --engine gpu --gpu-devices all
+Use specific  :  --engine gpu --gpu-devices 0:0,1:0
+```
+
+The `[auto]` tag marks the device that `--gpu-devices auto` will pick.
+Selection prefers vendor (NVIDIA → AMD → Apple → Intel) then compute
+unit count.
+
+### Examples
+
+Single best GPU:
+
+```powershell
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
+```
+
+Both NVIDIA and Intel iGPU together:
+
+```powershell
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices all
+```
+
+Pick exactly platform 0 device 0 and platform 1 device 0:
+
+```powershell
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices 0:0,1:0
+```
+
+---
+
+## Manual install (without the one-liner)
+
+Requirements:
+
+- Windows 10/11, Linux, or macOS.
+- Node.js 18+.
+- A C compiler if you want the native or GPU engine
+  (MinGW-w64 gcc on Windows, `gcc`/`clang` on Linux/macOS).
+- For GPU: an OpenCL ICD. NVIDIA / AMD drivers ship one. Intel may
+  need the *Intel OpenCL Runtime*.
+
+Build:
+
+```powershell
+# Windows
+.\build-native.ps1
 .\build-gpu.ps1
 ```
 
-4. Request a magic link:
-
-```powershell
-node rpow-cli.js login --email you@example.com --state .rpow-a.json
+```bash
+# Linux / macOS
+./build-native.sh
+./build-gpu.sh
 ```
 
-5. Complete login with the link from your email:
+Then:
 
-```powershell
-node rpow-cli.js complete-login --link "https://..." --state .rpow-a.json
+```bash
+node rpow-cli.js login --email you@example.com
+node rpow-cli.js complete-login --link "https://..."
+node rpow-cli.js list-gpus
+node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
 ```
 
-6. Start GPU mining:
+---
 
-```powershell
-node rpow-cli.js mine --count 1000 --engine gpu --state .rpow-a.json
-```
+## Security notes
 
-7. Optional tuning example for stronger GPUs:
+- All API calls go to a hardcoded allowlist of hosts
+  (`api.rpow2.com`, `rpow2.com`, `www.rpow2.com`). The CLI does not let
+  the server redirect API calls elsewhere.
+- API endpoint paths are hardcoded too — the bundled `index.js` is only
+  used by the `map` command for human inspection.
+- `/challenge` responses are validated (challenge ID shape, hex
+  `nonce_prefix` capped at 64 bytes, difficulty in `[1, 64]`, parseable
+  `expires_at`) before any value is passed to the C miner.
+- Spawned miner processes receive arguments as a `spawn` argv array,
+  never a shell string — so server-supplied values cannot inject shell
+  commands.
+- Session state (cookies + in-progress challenge) is stored under your
+  user profile (`%USERPROFILE%\.rpow-cli\state.json`), never globally.
+- The CLI never reads your password — auth is magic-link only.
 
-```powershell
-node rpow-cli.js mine --count 1000 --engine gpu --state .rpow-a.json --workers 16 --gpu-batch 2097152 --gpu-local-size 256
-```
+If you want to run against a local dev server, set `RPOW_DEV=1` to
+re-enable `127.0.0.1` and `127.0.0.1.sslip.io` in the host allowlist.
 
-If the GPU binary does not start, test it directly:
+---
 
-```powershell
-.\rpow-gpu-miner.exe --prefix 00 --difficulty 1 --batch-size 1024 --local-size 64
-```
+## Troubleshooting
 
-If GPU mining is unavailable, use CPU fallback:
+**`gpu miner not built`**
+You haven't built `rpow-gpu-miner.exe`. Run `.\build-gpu.ps1` (Windows)
+or `./build-gpu.sh` (Linux/macOS).
 
-```powershell
-node rpow-cli.js mine --count 1000 --engine native --workers 8 --state .rpow-a.json
-```
+**`OpenCL runtime not found`**
+Your machine has no OpenCL ICD. Install your GPU vendor's normal driver:
 
-## GPU example
+- NVIDIA: GeForce or Studio driver.
+- AMD: Adrenalin.
+- Intel: Latest Intel Graphics driver, plus the *Intel OpenCL Runtime*.
 
-```powershell
-node rpow-cli.js mine --count 1000 --engine gpu --state .rpow-a.json --workers 16 --gpu-batch 2097152 --gpu-local-size 256
-```
+**`no OpenCL GPU/accelerator found on selected platform`**
+Run `node rpow-cli.js list-gpus` to see what platforms exist; your CPU
+may be installed as an OpenCL platform but with no GPU under it.
 
-## CPU example
+**Mining starts then immediately says `challenge expired`**
+Your system clock is wrong. Sync it (Windows: *Settings → Time & language
+→ Date & time → Sync now*).
 
-```powershell
-node rpow-cli.js mine --count 1000 --engine native --workers 12 --state .rpow-a.json
-```
+**`magic-link request is rate-limited`**
+You've requested too many magic links in a short window. Wait a minute
+and try again.
+
+**Throttled hash rate / GPU runs hot**
+Lower `--gpu-batch` (e.g. `524288`) so each kernel launch is shorter
+and the GPU has more cooling headroom. Increase `--gpu-local-size` to
+512 on big NVIDIA cards if it divides your batch size.
+
+---
 
 ## Files
 
-- `rpow-cli.js` - CLI orchestrator
-- `rpow-native-miner.c` / `rpow-native-miner.exe` - native CPU miner
-- `rpow-gpu-miner.c` / `rpow-gpu-miner.exe` - native GPU miner
-- `rpow-miner-worker.js` - Node fallback worker
-- `index.js` - frontend bundle used for API discovery
+| File                       | Purpose                                                  |
+| -------------------------- | -------------------------------------------------------- |
+| `rpow-cli.js`              | Main CLI: HTTP, auth, mining orchestration, state.       |
+| `rpow-miner-worker.js`     | Pure-JS Node worker (`--engine node`).                   |
+| `rpow-native-miner.c/.exe` | Native CPU miner (`--engine native`).                    |
+| `rpow-gpu-miner.c/.exe`    | OpenCL GPU miner (`--engine gpu`).                       |
+| `install.ps1`              | One-liner Windows installer.                             |
+| `build-native.{sh,ps1}`    | Build script for the CPU miner.                          |
+| `build-gpu.{sh,ps1}`       | Build script for the GPU miner.                          |
+| `index.js`                 | Site bundle, kept for the `map` command (informational). |
 
-See `rpow-cli.README.md`, `INSTALL-OTHER-PC.md`, and `INSTALL-GPU-OTHER-PC.md` for more usage details.
+See `rpow-cli.README.md`, `INSTALL-OTHER-PC.md`, and
+`INSTALL-GPU-OTHER-PC.md` for additional notes.
