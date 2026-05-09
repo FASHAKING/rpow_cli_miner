@@ -39,6 +39,17 @@ node rpow-cli.js login --email you@example.com
 node rpow-cli.js complete-login --link "https://..."
 ```
 
+`paste-cookie`
+
+Альтернатива magic link: переиспользует `rpow_session` из браузера, где ты уже залогинен. Полезно, если письма не доходят или сервер блокирует CLI на этапе human verification. Значение можно передать аргументом `--cookie`, через переменную окружения `RPOW_COOKIE` или ввести интерактивно.
+
+```powershell
+node rpow-cli.js paste-cookie --cookie "rpow_session=eyJ..."
+$env:RPOW_COOKIE="rpow_session=eyJ..."; node rpow-cli.js me
+```
+
+Как достать cookie: открыть DevTools (F12) → Network на `rpow2.com`, нажать MINE, в запросе `POST api.rpow2.com/challenge` скопировать значение заголовка `cookie:` (начинается с `rpow_session=...`). Cookie хранится как пароль — кто им владеет, тот тратит токены аккаунта.
+
 `me`
 
 Показывает текущего пользователя, баланс и счетчики. Требует активную сессию.

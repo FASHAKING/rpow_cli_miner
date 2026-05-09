@@ -8,8 +8,12 @@
     1. Install prerequisites with winget if missing (Git, Node.js LTS, MinGW gcc).
     2. Clone (or update) the rpow_cli_miner repo into $env:USERPROFILE\rpow-cli.
     3. Build the GPU miner binary.
-    4. Walk you through magic-link login (with browser fallback if the
-       server requires human verification).
+    4. Authenticate you. Two options:
+         a. Magic-link login (request via the CLI, paste the link from
+            your inbox). Falls back to a browser request if the server
+            requires human verification.
+         b. Paste the rpow_session cookie from a browser tab you're
+            already signed into - useful if magic links don't reach you.
     5. Start mining in continuous mode against your GPU.
 
   All state (session cookies, saved challenge) lives in $env:USERPROFILE\.rpow-cli\state.json.
@@ -28,6 +32,12 @@
 
 .PARAMETER SkipMine
   Stop after install + login; don't start mining.
+
+.PARAMETER Cookie
+  Skip the magic-link flow and authenticate by pasting the rpow_session
+  cookie from a signed-in browser tab. Accepts either the bare value
+  (eyJ...) or the full 'rpow_session=eyJ...' string. Falls back to
+  $env:RPOW_COOKIE when omitted.
 
 .PARAMETER Gpus
   How to pick GPU device(s) to mine on. One of:
@@ -55,6 +65,10 @@
 .EXAMPLE
   # Use every GPU on the system (NVIDIA + Intel integrated):
   $env:RPOW_EMAIL="you@example.com"; $env:RPOW_GPUS="all"; irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
+
+.EXAMPLE
+  # Skip magic links and reuse a browser session cookie:
+  $env:RPOW_COOKIE="rpow_session=eyJ..."; irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 #>
 
 param(
@@ -65,6 +79,7 @@ param(
   [string]$Gpus       = $env:RPOW_GPUS,
   [string]$Count      = $env:RPOW_COUNT,
   [string]$Duration   = $env:RPOW_DURATION,
+  [string]$Cookie     = $env:RPOW_COOKIE,
   [switch]$SkipMine
 )
 
@@ -195,7 +210,51 @@ function Test-LoggedIn($stateFile) {
   } finally { Pop-Location }
 }
 
+function Show-CookieInstructions {
+  Write-Host ""
+  Write-Host "How to grab the rpow_session cookie from your signed-in browser:" -ForegroundColor Yellow
+  Write-Host "  1. Sign in to https://rpow2.com (if you aren't already)." -ForegroundColor Yellow
+  Write-Host "  2. Open DevTools (F12 in most browsers) and switch to the Network tab." -ForegroundColor Yellow
+  Write-Host "  3. Click the MINE button on the site once. You'll see a POST request to api.rpow2.com/challenge." -ForegroundColor Yellow
+  Write-Host "  4. Click that request -> Headers -> Request Headers -> copy the entire 'cookie:' value." -ForegroundColor Yellow
+  Write-Host "     It will start with rpow_session=..." -ForegroundColor Yellow
+  Write-Host "  Treat this cookie like a password. It identifies your account until it expires." -ForegroundColor Yellow
+  Write-Host ""
+}
+
+function Do-CookieLogin($stateFile, $cookieValue) {
+  if (-not $cookieValue) {
+    Show-CookieInstructions
+    $cookieValue = Read-Host "Paste cookie (e.g. 'rpow_session=eyJ...')"
+  }
+  if (-not $cookieValue) { throw "No cookie provided." }
+  Push-Location $InstallDir
+  try {
+    & node "rpow-cli.js" paste-cookie --cookie $cookieValue --state $stateFile
+    if ($LASTEXITCODE -ne 0) { throw "paste-cookie failed (cookie missing or expired?)" }
+  } finally { Pop-Location }
+  Write-Ok "logged in via browser cookie"
+}
+
 function Do-Login($stateFile) {
+  if ($Cookie) {
+    Write-Step "Authenticating with provided rpow_session cookie"
+    Do-CookieLogin $stateFile $Cookie
+    return
+  }
+
+  Write-Host ""
+  Write-Host "How would you like to sign in?"
+  Write-Host "  [m] magic link    - email a sign-in link to your address (default)"
+  Write-Host "  [c] browser cookie - paste rpow_session from a tab where you're already signed in"
+  $authChoice = (Read-Host "Choice [m]").Trim().ToLower()
+  if (-not $authChoice) { $authChoice = "m" }
+
+  if ($authChoice -eq "c" -or $authChoice -eq "cookie") {
+    Do-CookieLogin $stateFile $null
+    return
+  }
+
   if (-not $Email) {
     $Email = Read-Host "Enter your rpow2.com account email"
   }
@@ -212,7 +271,18 @@ function Do-Login($stateFile) {
       Write-Warn2 "The CLI could not request a magic link directly."
       Write-Warn2 "The server most likely requires browser-based human verification (Turnstile)."
       Write-Host ""
-      Write-Host "Fallback: request the magic link from your browser instead." -ForegroundColor Yellow
+      Write-Host "You have two ways forward:" -ForegroundColor Yellow
+      Write-Host "  [1] Request the magic link from your browser, then paste it here." -ForegroundColor Yellow
+      Write-Host "  [2] Skip magic links entirely and reuse the rpow_session cookie" -ForegroundColor Yellow
+      Write-Host "      from your already-signed-in browser." -ForegroundColor Yellow
+      Write-Host ""
+      $fallback = (Read-Host "Choose [1] magic-link / [2] cookie [1]").Trim()
+      if ($fallback -eq "2") {
+        Do-CookieLogin $stateFile $null
+        return
+      }
+      Write-Host ""
+      Write-Host "Magic-link fallback:" -ForegroundColor Yellow
       Write-Host "  1. Open https://rpow2.com in your browser." -ForegroundColor Yellow
       Write-Host "  2. Sign in with $Email and complete the human verification." -ForegroundColor Yellow
       Write-Host "  3. Open the magic-link email from rpow2.com." -ForegroundColor Yellow
@@ -223,10 +293,14 @@ function Do-Login($stateFile) {
       Write-Host ""
       Write-Host "Check your inbox for an email from rpow2.com." -ForegroundColor Yellow
       Write-Host "Copy the magic link from the email and paste it below." -ForegroundColor Yellow
+      Write-Host "(If you never receive a link, press Enter to switch to the browser-cookie option.)" -ForegroundColor Yellow
     }
 
-    $link = Read-Host "Paste magic link"
-    if (-not $link) { throw "No magic link provided." }
+    $link = Read-Host "Paste magic link (or leave blank to use browser cookie instead)"
+    if (-not $link) {
+      Do-CookieLogin $stateFile $null
+      return
+    }
 
     & node "rpow-cli.js" complete-login --link $link --state $stateFile
     if ($LASTEXITCODE -ne 0) { throw "complete-login failed" }

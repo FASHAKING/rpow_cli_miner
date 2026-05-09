@@ -29,8 +29,12 @@ That single command will:
 3. Build `rpow-gpu-miner.exe` (and the CPU fallback).
 4. Enumerate every OpenCL GPU on your system and ask whether you want
    to use the most powerful one, all of them, or a specific subset.
-5. Prompt for your account email, send a magic link, and prompt for the
-   pasted-back link.
+5. Authenticate you. Pick one of:
+   - **Magic link**: enter your email, the CLI requests a link, you paste
+     it back. Works for most accounts.
+   - **Browser session cookie**: paste the `rpow_session` cookie from a
+     tab where you're already signed in. Useful if magic-link emails
+     never reach your inbox. See [Authentication](#authentication) below.
 6. Ask how long you want to mine — forever, a token count, or a
    wall-clock duration like `7d`.
 7. Start mining.
@@ -44,6 +48,14 @@ the one-liner picks up where you left off.
 $env:RPOW_EMAIL    = "you@example.com"
 $env:RPOW_GPUS     = "all"      # auto | all | 0:0,1:0
 $env:RPOW_DURATION = "7d"       # or set RPOW_COUNT="forever" / "1000000"
+irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
+```
+
+Or skip the magic-link flow entirely by handing the installer a browser
+cookie up front:
+
+```powershell
+$env:RPOW_COOKIE = "rpow_session=eyJ..."   # see Authentication section
 irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 ```
 
@@ -90,6 +102,65 @@ that doesn't matter.
 
 ---
 
+## Authentication
+
+The miner authenticates the same way your browser does — by carrying the
+`rpow_session` cookie. There are two ways to obtain it:
+
+### Option A — magic link (default)
+
+```bash
+node rpow-cli.js login --email you@example.com
+node rpow-cli.js complete-login --link "https://rpow2.com/auth/verify?..."
+```
+
+If `POST /auth/request` is rate-limited or gated by browser-only human
+verification, the request can fail. In that case use Option B.
+
+### Option B — paste your browser session cookie
+
+If you can sign in to `rpow2.com` in your normal browser but the CLI
+can't request or receive a magic link, you can hand the CLI the same
+session cookie your browser is already using:
+
+1. Sign in to `https://rpow2.com` in your browser.
+2. Open DevTools (F12 in most browsers) and switch to the **Network** tab.
+3. Click the **MINE** button on the site once. You'll see a `POST` request
+   to `api.rpow2.com/challenge`.
+4. Click that request → **Headers** → **Request Headers** → copy the
+   entire `cookie:` value. It will start with `rpow_session=…`.
+5. Hand it to the CLI in any one of these ways:
+
+```bash
+# (a) one-shot command, value as an argument
+node rpow-cli.js paste-cookie --cookie "rpow_session=eyJ...paste-the-whole-thing..."
+
+# (b) or via env var (also picked up by every other rpow-cli command)
+export RPOW_COOKIE='rpow_session=eyJ...paste-the-whole-thing...'
+node rpow-cli.js me
+
+# (c) or interactively
+node rpow-cli.js paste-cookie
+```
+
+PowerShell users can do the same:
+
+```powershell
+$env:RPOW_COOKIE = "rpow_session=eyJ..."
+node rpow-cli.js me
+```
+
+The Windows installer also offers this as an interactive option, and
+will accept `$env:RPOW_COOKIE` (or the `-Cookie` parameter) for fully
+non-interactive setup.
+
+> **Treat the cookie like a password.** Anyone with it can spend tokens
+> from your account until it expires. The CLI stores it in
+> `state.json` under your user profile, just like the magic-link flow
+> does.
+
+---
+
 ## Commands
 
 ```text
@@ -97,6 +168,7 @@ node rpow-cli.js map                      # show the API endpoint table
 node rpow-cli.js list-gpus                # enumerate OpenCL devices
 node rpow-cli.js login --email you@...    # request a magic-link email
 node rpow-cli.js complete-login --link "https://..."
+node rpow-cli.js paste-cookie --cookie "rpow_session=eyJ..."   # browser-cookie auth
 node rpow-cli.js me                       # check session + balance
 node rpow-cli.js mine --count 10          # mine 10 tokens then stop
 node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
@@ -218,8 +290,13 @@ Build:
 Then:
 
 ```bash
+# Magic-link login:
 node rpow-cli.js login --email you@example.com
 node rpow-cli.js complete-login --link "https://..."
+
+# Or, if magic links don't work for you, paste the browser cookie instead:
+node rpow-cli.js paste-cookie --cookie "rpow_session=eyJ..."
+
 node rpow-cli.js list-gpus
 node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
 ```
@@ -241,7 +318,9 @@ node rpow-cli.js mine --count forever --engine gpu --gpu-devices auto
   commands.
 - Session state (cookies + in-progress challenge) is stored under your
   user profile (`%USERPROFILE%\.rpow-cli\state.json`), never globally.
-- The CLI never reads your password — auth is magic-link only.
+- The CLI never reads your password. Auth is either a magic link
+  (issued by the server) or the same `rpow_session` session cookie your
+  browser already uses — it's never an account password.
 
 If you want to run against a local dev server, set `RPOW_DEV=1` to
 re-enable `127.0.0.1` and `127.0.0.1.sslip.io` in the host allowlist.

@@ -241,6 +241,7 @@ function printApiMap(discovered) {
   console.log("Browser request defaults: credentials=include, JSON content-type only when body exists.");
   console.log("Sequence:");
   console.log("1. POST /auth/request { email } -> sends magic link, no browser UI needed.");
+  console.log("   (alt) paste-cookie -> reuse the rpow_session cookie from a signed-in browser tab.");
   console.log("2. Open/fetch magic link -> server sets session cookie; CLI stores Set-Cookie values.");
   console.log("3. GET /me -> verifies session and balance.");
   console.log("4. POST /challenge -> { challenge_id, nonce_prefix, difficulty_bits }.");
@@ -281,6 +282,27 @@ function responseSetCookies(headers) {
   if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
   const single = headers.get("set-cookie");
   return single ? [single] : [];
+}
+
+function parseSessionCookieInput(input) {
+  if (input === undefined || input === null) return null;
+  let s = String(input).trim();
+  if (!s) return null;
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  if (s.toLowerCase().startsWith("cookie:")) s = s.slice(7).trim();
+  if (s.includes("=")) {
+    for (const part of s.split(/;\s*/)) {
+      const eq = part.indexOf("=");
+      if (eq <= 0) continue;
+      const name = part.slice(0, eq).trim();
+      const value = part.slice(eq + 1).trim();
+      if (name === "rpow_session" && value) return value;
+    }
+    return null;
+  }
+  return s;
 }
 
 function parseProxySpec(spec) {
@@ -516,6 +538,13 @@ class RpowClient {
     this.timeoutMs = Number(options.timeoutMs || 20000);
     this.maxRetries = Number(options.retries || 5);
     this.proxy = parseProxySpec(options.proxy || process.env.RPOW_PROXY || "");
+    if (process.env.RPOW_COOKIE) {
+      const value = parseSessionCookieInput(process.env.RPOW_COOKIE);
+      if (value) {
+        this.state.cookies = { ...(this.state.cookies || {}), rpow_session: value };
+        this.save();
+      }
+    }
   }
 
   save() {
@@ -1329,6 +1358,19 @@ async function main() {
     return;
   }
 
+  if (command === "paste-cookie" || command === "use-cookie" || command === "cookie-login") {
+    const raw = args.cookie || process.env.RPOW_COOKIE || await promptLine("paste cookie (rpow_session=...): ");
+    const value = parseSessionCookieInput(raw);
+    if (!value) {
+      throw new Error("could not find an rpow_session value in the provided cookie; expected something like rpow_session=eyJ...");
+    }
+    client.state.cookies = { ...(client.state.cookies || {}), rpow_session: value };
+    client.save();
+    const me = await client.api("GET", "/me");
+    log("success", "session active via browser cookie", me);
+    return;
+  }
+
   if (command === "me") {
     log("info", "me", await client.api("GET", "/me"));
     return;
@@ -1507,6 +1549,7 @@ async function main() {
   node rpow-cli.js list-gpus
   node rpow-cli.js login --email you@example.com
   node rpow-cli.js complete-login --link "https://..."
+  node rpow-cli.js paste-cookie --cookie "rpow_session=eyJ..."   # reuse a signed-in browser session
   node rpow-cli.js me
   node rpow-cli.js mine --count 1
   node rpow-cli.js mine --count 1000000 --engine gpu
@@ -1535,6 +1578,7 @@ Options:
   --gpu-devices auto|all|p:d[,p:d ...]
   --gpu-platform 0   (legacy; ignored if --gpu-devices is set)
   --gpu-device 0     (legacy; ignored if --gpu-devices is set)
+  --cookie "rpow_session=..."   (paste-cookie; or set RPOW_COOKIE env var)
   --verbose`);
 }
 
