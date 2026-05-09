@@ -28,12 +28,23 @@
 .PARAMETER SkipMine
   Stop after install + login; don't start mining.
 
+.PARAMETER Gpus
+  How to pick GPU device(s) to mine on. One of:
+    - 'auto'    : use the single most powerful GPU (recommended)
+    - 'all'     : use every detected GPU together (e.g. NVIDIA + Intel iGPU)
+    - 'p:d,...' : explicit comma-separated platform:device pairs, e.g. '0:0,1:0'
+  If omitted you'll be prompted interactively.
+
 .EXAMPLE
   irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 
 .EXAMPLE
   # With pre-supplied email, no prompt:
   $env:RPOW_EMAIL="you@example.com"; irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
+
+.EXAMPLE
+  # Use every GPU on the system (NVIDIA + Intel integrated):
+  $env:RPOW_EMAIL="you@example.com"; $env:RPOW_GPUS="all"; irm https://raw.githubusercontent.com/fashaking/rpow_cli_miner/main/install.ps1 | iex
 #>
 
 param(
@@ -41,6 +52,7 @@ param(
   [string]$Repo       = "https://github.com/fashaking/rpow_cli_miner.git",
   [string]$Branch     = "main",
   [string]$InstallDir = (Join-Path $env:USERPROFILE "rpow-cli"),
+  [string]$Gpus       = $env:RPOW_GPUS,
   [switch]$SkipMine
 )
 
@@ -195,13 +207,68 @@ function Do-Login($stateFile) {
   Write-Ok "logged in"
 }
 
-function Start-Mining($stateFile) {
+function Get-GpuDevices {
+  Push-Location $InstallDir
+  try {
+    $exe = Join-Path $InstallDir "rpow-gpu-miner.exe"
+    if (-not (Test-Path $exe)) { return @() }
+    $raw = & $exe --list-devices 2>$null
+    if (-not $raw) { return @() }
+    $list = @()
+    foreach ($line in $raw) {
+      $line = $line.Trim()
+      if (-not $line) { continue }
+      try { $list += ($line | ConvertFrom-Json) } catch { }
+    }
+    return $list
+  } finally { Pop-Location }
+}
+
+function Choose-Gpus {
+  $devices = Get-GpuDevices
+  if (-not $devices -or $devices.Count -eq 0) {
+    Write-Warn2 "No OpenCL GPU devices detected. Mining will fall back to whatever the miner picks."
+    return "auto"
+  }
+
+  Write-Step "Detected GPU devices"
+  for ($i = 0; $i -lt $devices.Count; $i++) {
+    $d = $devices[$i]
+    Write-Host ("  [{0}] {1}:{2}  {3}  ({4})  cu={5}  mem={6}MB" -f `
+      $i, $d.platform, $d.device, $d.device_name, $d.device_vendor, $d.compute_units, $d.global_mem_mb)
+  }
+
+  if ($Gpus) { Write-Ok "using --Gpus / RPOW_GPUS = '$Gpus'"; return $Gpus }
+
+  Write-Host ""
+  Write-Host "Pick GPU selection:"
+  Write-Host "  [a] auto - the most powerful single GPU (recommended)"
+  Write-Host "  [b] all  - every detected GPU together (e.g. NVIDIA + Intel iGPU)"
+  Write-Host "  [c] custom - I'll type platform:device pairs"
+  $choice = (Read-Host "Choice [a]").Trim().ToLower()
+  if (-not $choice) { $choice = "a" }
+  switch ($choice) {
+    "a"      { return "auto" }
+    "auto"   { return "auto" }
+    "b"      { return "all" }
+    "all"    { return "all" }
+    default  {
+      $custom = (Read-Host "Enter comma-separated platform:device pairs, e.g. '0:0,1:0'").Trim()
+      if (-not $custom) { return "auto" }
+      return $custom
+    }
+  }
+}
+
+function Start-Mining($stateFile, $gpuSpec) {
   Write-Step "Starting GPU miner (Ctrl+C to stop)"
+  Write-Ok "device selection: $gpuSpec"
   Push-Location $InstallDir
   try {
     & node "rpow-cli.js" mine `
       --count forever `
       --engine gpu `
+      --gpu-devices $gpuSpec `
       --state $stateFile `
       --gpu-batch 2097152 `
       --gpu-local-size 256
@@ -230,12 +297,14 @@ if (Test-LoggedIn $stateFile) {
   Do-Login $stateFile
 }
 
+$gpuSpec = Choose-Gpus
+
 if ($SkipMine) {
   Write-Step "Done. Skipping mine as requested."
   Write-Host ""
   Write-Host "To start mining later:" -ForegroundColor Cyan
-  Write-Host "  cd `"$InstallDir`"; node rpow-cli.js mine --count forever --engine gpu --state `"$stateFile`""
+  Write-Host "  cd `"$InstallDir`"; node rpow-cli.js mine --count forever --engine gpu --gpu-devices $gpuSpec --state `"$stateFile`""
   return
 }
 
-Start-Mining $stateFile
+Start-Mining $stateFile $gpuSpec

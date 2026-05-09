@@ -52,6 +52,7 @@ typedef cl_uint cl_kernel_work_group_info;
 #define CL_DEVICE_VENDOR 0x102C
 #define CL_DEVICE_MAX_COMPUTE_UNITS 0x1002
 #define CL_DEVICE_MAX_WORK_GROUP_SIZE 0x1004
+#define CL_DEVICE_GLOBAL_MEM_SIZE 0x101F
 #define CL_PLATFORM_NAME 0x0902
 
 typedef cl_int (*PFN_clGetPlatformIDs)(cl_uint, cl_platform_id *, cl_uint *);
@@ -310,6 +311,73 @@ static void get_info_string_device(cl_device_id device, cl_device_info what, cha
   }
 }
 
+static void emit_json_string(const char *s) {
+  putchar('"');
+  for (; *s; s++) {
+    unsigned char c = (unsigned char)*s;
+    if (c == '"' || c == '\\') { putchar('\\'); putchar(c); }
+    else if (c < 0x20 || c == 0x7f) putchar('?');
+    else putchar(c);
+  }
+  putchar('"');
+}
+
+static int cmd_list_devices(void) {
+  load_opencl();
+  cl_uint platform_count = 0;
+  cl_int err = cl.clGetPlatformIDs(0, NULL, &platform_count);
+  if (err != CL_SUCCESS || platform_count == 0) {
+    fprintf(stderr, "no OpenCL platforms found\n");
+    return 2;
+  }
+  cl_platform_id *platforms = (cl_platform_id *)calloc(platform_count, sizeof(*platforms));
+  if (!platforms) return 2;
+  err = cl.clGetPlatformIDs(platform_count, platforms, NULL);
+  if (err != CL_SUCCESS) { free(platforms); return 2; }
+
+  cl_device_type types[2] = { CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ACCELERATOR };
+  const char *type_names[2] = { "gpu", "accelerator" };
+  for (cl_uint p = 0; p < platform_count; ++p) {
+    char pname[256] = {0};
+    get_info_string_platform(platforms[p], CL_PLATFORM_NAME, pname, sizeof(pname));
+    for (size_t t = 0; t < 2; ++t) {
+      cl_uint dcount = 0;
+      err = cl.clGetDeviceIDs(platforms[p], types[t], 0, NULL, &dcount);
+      if (err != CL_SUCCESS || dcount == 0) continue;
+      cl_device_id *devs = (cl_device_id *)calloc(dcount, sizeof(*devs));
+      if (!devs) continue;
+      err = cl.clGetDeviceIDs(platforms[p], types[t], dcount, devs, NULL);
+      if (err != CL_SUCCESS) { free(devs); continue; }
+      for (cl_uint d = 0; d < dcount; ++d) {
+        char dname[256] = {0};
+        char dvendor[256] = {0};
+        get_info_string_device(devs[d], CL_DEVICE_NAME, dname, sizeof(dname));
+        get_info_string_device(devs[d], CL_DEVICE_VENDOR, dvendor, sizeof(dvendor));
+        cl_uint compute_units = 0;
+        size_t max_work_group = 0;
+        cl_ulong global_mem = 0;
+        cl.clGetDeviceInfo(devs[d], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, NULL);
+        cl.clGetDeviceInfo(devs[d], CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group), &max_work_group, NULL);
+        cl.clGetDeviceInfo(devs[d], CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem), &global_mem, NULL);
+        printf("{\"type\":\"device\",\"platform\":%u,\"device\":%u,\"device_type\":\"%s\",\"platform_name\":",
+          (unsigned)p, (unsigned)d, type_names[t]);
+        emit_json_string(pname);
+        printf(",\"device_name\":");
+        emit_json_string(dname);
+        printf(",\"device_vendor\":");
+        emit_json_string(dvendor);
+        printf(",\"compute_units\":%u,\"max_work_group\":%zu,\"global_mem_mb\":%llu}\n",
+          (unsigned)compute_units, max_work_group,
+          (unsigned long long)(global_mem / (1024ull * 1024ull)));
+        fflush(stdout);
+      }
+      free(devs);
+    }
+  }
+  free(platforms);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   uint8_t prefix[64] = {0};
   size_t prefix_len = 0;
@@ -324,7 +392,8 @@ int main(int argc, char **argv) {
   uint32_t device_index = 0;
 
   for (int i = 1; i < argc; ++i) {
-    if (!strcmp(argv[i], "--prefix") && i + 1 < argc) prefix_hex = argv[++i];
+    if (!strcmp(argv[i], "--list-devices")) return cmd_list_devices();
+    else if (!strcmp(argv[i], "--prefix") && i + 1 < argc) prefix_hex = argv[++i];
     else if (!strcmp(argv[i], "--difficulty") && i + 1 < argc) difficulty = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--start") && i + 1 < argc) start_nonce = parse_u64(argv[++i]);
     else if (!strcmp(argv[i], "--cutoff-ms") && i + 1 < argc) cutoff_ms = parse_u64(argv[++i]);
